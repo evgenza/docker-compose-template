@@ -1,0 +1,235 @@
+# Docker Compose файл для запуска Apache Kafka в режиме KRaft (без ZooKeeper)
+# Версия 3.8 поддерживает все необходимые функции
+version: '3.8'
+
+services:
+  # === ОСНОВНОЙ СЕРВИС KAFKA ===
+  kafka:
+    # Официальный образ Confluent Kafka версии 8.0.0 (содержит Apache Kafka 4.0)
+    image: confluentinc/cp-kafka:8.0.0
+
+    # Имя контейнера для удобства (можно обращаться по имени)
+    container_name: kafka-dev
+
+    # Hostname внутри Docker сети (другие контейнеры будут видеть его как 'kafka')
+    hostname: kafka
+
+    # Проброс портов: HOST:CONTAINER
+    ports:
+      - "29092:29092"  # Внешний порт для подключения приложений с хоста
+      - "9101:9101"    # JMX порт для мониторинга метрик Kafka
+
+    # Политика перезапуска: всегда, кроме случаев когда остановлен вручную
+    restart: unless-stopped
+
+    # Монтирование volume'а для персистентного хранения данных
+    volumes:
+      - kafka-dev-data:/var/lib/kafka/data  # Понятное имя volume'а
+
+    # Переменные окружения для конфигурации Kafka
+    environment:
+      # === БАЗОВАЯ KRAFT КОНФИГУРАЦИЯ ===
+      # Уникальный ID узла в кластере (должен быть уникальным для каждого брокера)
+      KAFKA_NODE_ID: 1
+
+      # Роли этого узла: broker (обрабатывает сообщения) + controller (управляет кластером)
+      # В KRaft один узел может выполнять обе роли одновременно
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+
+      # Уникальный идентификатор кластера (генерируется один раз, потом остается постоянным)
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+
+      # Список узлов, участвующих в голосовании для выбора лидера контроллера
+      # Формат: ID@HOST:PORT (порт 29093 используется для внутреннего KRaft протокола)
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+
+      # === НАСТРОЙКИ СЕТЕВЫХ СЛУШАТЕЛЕЙ ===
+      # Определяет протоколы безопасности для каждого типа listener'а
+      # PLAINTEXT = без шифрования (подходит для разработки)
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+
+      # Адреса и порты, на которых Kafka принимает подключения
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:9092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:29092'
+      # - PLAINTEXT://kafka:9092 - для связи между контейнерами
+      # - CONTROLLER://kafka:29093 - для внутреннего KRaft протокола
+      # - PLAINTEXT_HOST://0.0.0.0:29092 - для подключений с хоста
+
+      # Адреса, которые Kafka сообщает клиентам для подключения
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092'
+      # Клиенты внутри Docker будут использовать kafka:9092
+      # Клиенты с хоста будут использовать localhost:29092
+
+      # Listener, используемый для связи между брокерами в кластере
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+
+      # Listener'ы, используемые контроллером для KRaft протокола
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+
+      # === JMX МОНИТОРИНГ ===
+      # Порт для JMX (Java Management Extensions) - позволяет мониторить метрики
+      KAFKA_JMX_PORT: 9101
+      # Hostname для JMX подключений
+      KAFKA_JMX_HOSTNAME: localhost
+
+      # === НАСТРОЙКИ ДЛЯ РАЗРАБОТКИ ===
+      # Автоматически создавать топики при первом обращении к ним
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+
+      # Разрешить удаление топиков (по умолчанию запрещено в продакшене)
+      KAFKA_DELETE_TOPIC_ENABLE: 'true'
+
+      # Количество партиций для новых топиков по умолчанию
+      KAFKA_NUM_PARTITIONS: 3
+
+      # Фактор репликации по умолчанию (сколько копий каждой партиции)
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+
+      # Фактор репликации для служебного топика с offset'ами консьюмеров
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+      # === НАСТРОЙКИ ХРАНЕНИЯ ДАННЫХ ===
+      # Сколько часов хранить сообщения (24 часа = 1 день)
+      KAFKA_LOG_RETENTION_HOURS: 24
+
+      # Максимальный размер одного сегмента лога в байтах (100MB)
+      KAFKA_LOG_SEGMENT_BYTES: 104857600
+
+      # Как часто проверять нужно ли удалять старые сообщения (каждые 5 минут)
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
+
+    # Проверка здоровья контейнера
+    healthcheck:
+      # Команда для проверки: получить список топиков
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+      interval: 30s      # Проверять каждые 30 секунд
+      timeout: 10s       # Таймаут ожидания ответа
+      retries: 5         # Количество неудачных попыток до признания нездоровым
+      start_period: 60s  # Не проверять первые 60 секунд (время на запуск)
+
+
+
+  # === KAFKA UI - ВЕБ-ИНТЕРФЕЙС ДЛЯ УПРАВЛЕНИЯ ===
+  kafka-ui:
+    # Open Source веб-интерфейс для управления Kafka
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui-dev
+
+    # Зависимость: ждать пока Kafka станет здоровым
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    # Веб-интерфейс будет доступен на http://localhost:8080
+    ports:
+      - "8080:8080"
+
+    restart: unless-stopped
+
+    environment:
+      # Имя кластера, которое будет отображаться в UI
+      KAFKA_CLUSTERS_0_NAME: local-dev
+
+      # Адрес Kafka для подключения (внутренний порт между контейнерами)
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+
+      # JMX порт для получения метрик от Kafka
+      KAFKA_CLUSTERS_0_JMXPORT: 9101
+
+      # Разрешить динамическое изменение конфигурации через UI
+      DYNAMIC_CONFIG_ENABLED: true
+
+
+
+  # === SCHEMA REGISTRY - УПРАВЛЕНИЕ СХЕМАМИ ДАННЫХ ===
+  schema-registry:
+    # Confluent Schema Registry для управления схемами Avro/JSON/Protobuf
+    image: confluentinc/cp-schema-registry:8.0.0
+    container_name: schema-registry-dev
+
+    # Ждать готовности Kafka
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    # REST API будет доступен на http://localhost:8081
+    ports:
+      - "8081:8081"
+
+    restart: unless-stopped
+
+    environment:
+      # Hostname сервиса Schema Registry
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+
+      # Адрес Kafka для хранения схем (неправильно указан порт!)
+      # ИСПРАВЬ НА: kafka:9092
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'kafka:29092'
+
+      # На каком адресе принимать HTTP запросы
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+
+
+
+  # === KAFKA CONNECT - ИНТЕГРАЦИЯ С ВНЕШНИМИ СИСТЕМАМИ ===
+  kafka-connect:
+    # Confluent Kafka Connect для интеграции с базами данных, файлами, API
+    image: confluentinc/cp-kafka-connect:8.0.0
+    container_name: kafka-connect-dev
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    # REST API для управления коннекторами на http://localhost:8083
+    ports:
+      - "8083:8083"
+
+    restart: unless-stopped
+
+    environment:
+      # Адрес Kafka (неправильно указан порт!)
+      # ИСПРАВЬ НА: kafka:9092
+      CONNECT_BOOTSTRAP_SERVERS: 'kafka:29092'
+
+      # Hostname для REST API
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+
+      # ID группы для координации между worker'ами Connect
+      CONNECT_GROUP_ID: connect-cluster
+
+      # === ТОПИКИ ДЛЯ ВНУТРЕННИХ ДАННЫХ CONNECT ===
+      # Топик для хранения конфигураций коннекторов
+      CONNECT_CONFIG_STORAGE_TOPIC: docker-connect-configs
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+
+      # Топик для хранения offset'ов (позиций чтения)
+      CONNECT_OFFSET_STORAGE_TOPIC: docker-connect-offsets
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      # Как часто сохранять offset'ы в топик (каждые 10 секунд)
+      CONNECT_OFFSET_FLUSH_INTERVAL_MS: 10000
+
+      # Топик для хранения статусов коннекторов и задач
+      CONNECT_STATUS_STORAGE_TOPIC: docker-connect-status
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+
+      # === КОНВЕРТЕРЫ ДАННЫХ ===
+      # Как преобразовывать ключи сообщений (строки)
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+
+      # Как преобразовывать значения сообщений (JSON без схем)
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: false
+
+      # Пути поиска плагинов коннекторов
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+
+      # Уменьшить уровень логирования для некоторых компонентов
+      CONNECT_LOG4J_LOGGERS: org.apache.zookeeper=ERROR,org.I0Itec.zkclient=ERROR,org.reflections=ERROR
+
+
+
+# === VOLUME'Ы ДЛЯ ПЕРСИСТЕНТНОГО ХРАНЕНИЯ ===
+volumes:
+  kafka-dev-data:
+    # Локальный драйвер - данные хранятся на диске хоста
+    driver: local
