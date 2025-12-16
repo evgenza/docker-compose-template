@@ -16,15 +16,15 @@ services:
 
     # Проброс портов: HOST:CONTAINER
     ports:
-      - "29092:29092"  # Внешний порт для подключения приложений с хоста
-      - "9101:9101"    # JMX порт для мониторинга метрик Kafka
+      - "${KAFKA_PORT:-29092}:29092"  # Внешний порт для подключения приложений с хоста
+      - "${KAFKA_JMX_PORT:-9101}:9101"    # JMX порт для мониторинга метрик Kafka
 
     # Политика перезапуска: всегда, кроме случаев когда остановлен вручную
     restart: unless-stopped
 
     # Монтирование volume'а для персистентного хранения данных
     volumes:
-      - kafka-dev-data:/var/lib/kafka/data  # Понятное имя volume'а
+      - kafka_data:/var/lib/kafka/data
 
     # Переменные окружения для конфигурации Kafka
     environment:
@@ -55,9 +55,9 @@ services:
       # - PLAINTEXT_HOST://0.0.0.0:29092 - для подключений с хоста
 
       # Адреса, которые Kafka сообщает клиентам для подключения
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:${KAFKA_PORT:-29092}'
       # Клиенты внутри Docker будут использовать kafka:9092
-      # Клиенты с хоста будут использовать localhost:29092
+      # Клиенты с хоста будут использовать localhost:29092 (или значение из KAFKA_PORT)
 
       # Listener, используемый для связи между брокерами в кластере
       KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
@@ -119,9 +119,9 @@ services:
       kafka:
         condition: service_healthy
 
-    # Веб-интерфейс будет доступен на http://localhost:8080
+    # Веб-интерфейс будет доступен на http://localhost:8080 (или значение из KAFKA_UI_PORT)
     ports:
-      - "8080:8080"
+      - "${KAFKA_UI_PORT:-8080}:8080"
 
     restart: unless-stopped
 
@@ -151,9 +151,9 @@ services:
       kafka:
         condition: service_healthy
 
-    # REST API будет доступен на http://localhost:8081
+    # REST API будет доступен на http://localhost:8081 (или значение из SCHEMA_REGISTRY_PORT)
     ports:
-      - "8081:8081"
+      - "${SCHEMA_REGISTRY_PORT:-8081}:8081"
 
     restart: unless-stopped
 
@@ -161,9 +161,8 @@ services:
       # Hostname сервиса Schema Registry
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
 
-      # Адрес Kafka для хранения схем (неправильно указан порт!)
-      # ИСПРАВЬ НА: kafka:9092
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'kafka:29092'
+      # Адрес Kafka для хранения схем
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'kafka:9092'
 
       # На каком адресе принимать HTTP запросы
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
@@ -180,16 +179,15 @@ services:
       kafka:
         condition: service_healthy
 
-    # REST API для управления коннекторами на http://localhost:8083
+    # REST API для управления коннекторами на http://localhost:8083 (или значение из KAFKA_CONNECT_PORT)
     ports:
-      - "8083:8083"
+      - "${KAFKA_CONNECT_PORT:-8083}:8083"
 
     restart: unless-stopped
 
     environment:
-      # Адрес Kafka (неправильно указан порт!)
-      # ИСПРАВЬ НА: kafka:9092
-      CONNECT_BOOTSTRAP_SERVERS: 'kafka:29092'
+      # Адрес Kafka
+      CONNECT_BOOTSTRAP_SERVERS: 'kafka:9092'
 
       # Hostname для REST API
       CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
@@ -230,6 +228,10 @@ services:
 
 # === VOLUME'Ы ДЛЯ ПЕРСИСТЕНТНОГО ХРАНЕНИЯ ===
 volumes:
-  kafka-dev-data:
-    # Локальный драйвер - данные хранятся на диске хоста
+  kafka_data:
     driver: local
+
+# === СЕТЬ ДЛЯ ИЗОЛЯЦИИ СЕРВИСОВ ===
+networks:
+  default:
+    name: kafka-network
